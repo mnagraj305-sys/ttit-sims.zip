@@ -1,0 +1,68 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_base_url:
+        description: 'Backend URL (e.g. http://203.0.113.10:3000)'
+        required: true
+        default: 'http://10.0.2.2:3000'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unzip project
+        run: unzip -q ttit-sims.zip
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Generate Android project around our lib and pubspec
+        working-directory: ttit-sims/flutter_app
+        run: |
+          cp -r lib /tmp/lib_backup
+          cp pubspec.yaml /tmp/pubspec_backup.yaml
+          flutter create . --org in.ac.ttit --project-name ttit_sims --platforms android
+          rm -rf lib && cp -r /tmp/lib_backup lib
+          cp /tmp/pubspec_backup.yaml pubspec.yaml
+
+      - name: Patch manifest and MainActivity
+        working-directory: ttit-sims/flutter_app
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          mf = pathlib.Path('android/app/src/main/AndroidManifest.xml')
+          s = mf.read_text()
+          perms = ('<uses-permission android:name="android.permission.INTERNET"/>\n'
+                   '    <uses-permission android:name="android.permission.USE_BIOMETRIC"/>\n    ')
+          if 'USE_BIOMETRIC' not in s:
+              s = s.replace('<application', perms + '<application', 1)
+          if 'usesCleartextTraffic' not in s:
+              s = s.replace('<application', '<application android:usesCleartextTraffic="true"', 1)
+          mf.write_text(s)
+          for p in pathlib.Path('android/app/src/main').rglob('MainActivity.*'):
+              p.write_text(p.read_text().replace('FlutterActivity', 'FlutterFragmentActivity'))
+              print('Patched', p)
+          PY
+
+      - run: flutter pub get
+        working-directory: ttit-sims/flutter_app
+
+      - name: Build release APK
+        working-directory: ttit-sims/flutter_app
+        run: flutter build apk --release --dart-define=API_BASE_URL="${{ github.event.inputs.api_base_url }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ttit-sims-apk
+          path: ttit-sims/flutter_app/build/app/outputs/flutter-apk/app-release.apk
